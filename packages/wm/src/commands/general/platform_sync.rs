@@ -2,8 +2,8 @@ use anyhow::Context;
 #[cfg(target_os = "windows")]
 use wm_common::WindowEffectConfig;
 use wm_common::{
-  CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
-  WindowState, WmEvent,
+  CursorJumpTrigger, DisplayState, HideCorner, HideMethod, TilingLayout,
+  UniqueExt, WindowState, WmEvent,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -13,7 +13,9 @@ use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
   models::{Container, WindowContainer},
-  traits::{CommonGetters, PositionGetters, WindowGetters},
+  traits::{
+    CommonGetters, PositionGetters, TilingDirectionGetters, WindowGetters,
+  },
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -24,6 +26,15 @@ pub fn platform_sync(
 ) -> anyhow::Result<()> {
   let focused_container =
     state.focused_container().context("No focused container.")?;
+
+  // The position of windows in an accordion depends on which child is
+  // focused, so they need to be redrawn on any change in focus.
+  if state.pending_sync.needs_focus_update()
+    || state.pending_sync.needs_focused_effect_update()
+    || !state.pending_sync.workspaces_to_reorder().is_empty()
+  {
+    queue_accordion_redraws(&focused_container, state);
+  }
 
   if state.pending_sync.needs_focus_update() {
     sync_focus(&focused_container, state)?;
@@ -76,6 +87,25 @@ pub fn platform_sync(
   state.pending_sync.clear();
 
   Ok(())
+}
+
+/// Queues a redraw for the children of any accordion containers that the
+/// focused container is in.
+fn queue_accordion_redraws(
+  focused_container: &Container,
+  state: &mut WmState,
+) {
+  let accordions = focused_container
+    .ancestors()
+    .filter_map(|ancestor| ancestor.as_direction_container().ok())
+    .filter(|ancestor| ancestor.tiling_layout() == TilingLayout::Accordion)
+    .collect::<Vec<_>>();
+
+  for accordion in accordions {
+    state
+      .pending_sync
+      .queue_containers_to_redraw(accordion.tiling_children());
+  }
 }
 
 fn sync_focus(
