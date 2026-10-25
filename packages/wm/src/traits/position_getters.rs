@@ -14,6 +14,9 @@ pub trait PositionGetters {
 /// inset by `padding` on both ends so that its neighbors peek out. The
 /// child before the focused one peeks out at the start, and the child
 /// after it peeks out at the end.
+///
+/// The padding is clamped to a quarter of the parent's length so that
+/// every child keeps at least half of the parent's length.
 pub fn accordion_rect(
   parent_rect: &Rect,
   tiling_direction: &TilingDirection,
@@ -25,6 +28,12 @@ pub fn accordion_rect(
   let index = index.context("Container not found in parent.")?;
   let focused_index = focused_index.unwrap_or(0);
   let last_index = count.saturating_sub(1);
+
+  let parent_length = match tiling_direction {
+    TilingDirection::Horizontal => parent_rect.width(),
+    TilingDirection::Vertical => parent_rect.height(),
+  };
+  let padding = padding.clamp(0, parent_length.max(0) / 4);
 
   // Padding at the start and end of the child along the tiling direction.
   let (start, end) = if count <= 1 {
@@ -221,6 +230,33 @@ mod tests {
       (rect.y(), rect.height(), rect.width()),
       (0, 500 - PADDING, PARENT_WIDTH)
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn padding_is_clamped_in_small_parents() -> anyhow::Result<()> {
+    // Padding of 30px in a 100px parent is clamped to 25px, so the child
+    // inset on one side by double padding keeps half the parent's width.
+    let rect = accordion_rect(
+      &Rect::from_xy(0, 0, 100, 500),
+      &TilingDirection::Horizontal,
+      PADDING,
+      Some(0),
+      3,
+      Some(1),
+    )?;
+    assert_eq!((rect.x(), rect.width()), (0, 75));
+
+    let rect = accordion_rect(
+      &Rect::from_xy(0, 0, 100, 500),
+      &TilingDirection::Horizontal,
+      PADDING,
+      Some(1),
+      4,
+      Some(2),
+    )?;
+    assert_eq!((rect.x(), rect.width()), (0, 50));
 
     Ok(())
   }

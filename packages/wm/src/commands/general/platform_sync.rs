@@ -1,4 +1,7 @@
+use std::collections::HashSet;
+
 use anyhow::Context;
+use uuid::Uuid;
 #[cfg(target_os = "windows")]
 use wm_common::WindowEffectConfig;
 use wm_common::{
@@ -106,6 +109,46 @@ fn queue_accordion_redraws(
       .pending_sync
       .queue_containers_to_redraw(accordion.tiling_children());
   }
+}
+
+/// Gets the IDs of the containers that are adjacent to the focused
+/// container in any accordion it is in, along with their descendants.
+///
+/// These are the containers that peek out from behind the focused
+/// container, so they need to be directly below it in the z-order.
+fn accordion_neighbor_ids(focused_container: &Container) -> HashSet<Uuid> {
+  let mut neighbor_ids = HashSet::new();
+  let mut child = focused_container.clone();
+
+  for ancestor in focused_container.ancestors() {
+    if let Ok(accordion) = ancestor.as_direction_container() {
+      if accordion.tiling_layout() == TilingLayout::Accordion {
+        let siblings = accordion.tiling_children().collect::<Vec<_>>();
+
+        if let Some(index) = siblings
+          .iter()
+          .position(|sibling| sibling.id() == child.id())
+        {
+          let neighbors = [
+            index.checked_sub(1).and_then(|i| siblings.get(i)),
+            siblings.get(index + 1),
+          ];
+
+          for neighbor in neighbors.into_iter().flatten() {
+            neighbor_ids.extend(
+              neighbor
+                .self_and_descendants()
+                .map(|descendant| descendant.id()),
+            );
+          }
+        }
+      }
+    }
+
+    child = ancestor;
+  }
+
+  neighbor_ids
 }
 
 fn sync_focus(
@@ -221,14 +264,28 @@ fn redraw_containers(
       .descendant_focus_order()
       .collect::<Vec<_>>();
 
+    let accordion_neighbor_ids = accordion_neighbor_ids(focused_container);
+
     // Sort the windows to update by their focus order. The most recently
-    // focused window will be updated first.
+    // focused window will be updated first. Windows that peek out from
+    // behind the focused window in an accordion come right after it, so
+    // that they end up directly below it in the z-order.
     // TODO: To reduce flicker, redraw windows that will be shown first,
     // then redraw the ones to be hidden last.
     windows.sort_by_key(|window| {
-      descendant_focus_order
+      let priority = if window.id() == focused_container.id() {
+        0
+      } else if accordion_neighbor_ids.contains(&window.id()) {
+        1
+      } else {
+        2
+      };
+
+      let focus_index = descendant_focus_order
         .iter()
-        .position(|order| order.id() == window.id())
+        .position(|order| order.id() == window.id());
+
+      (priority, focus_index)
     });
 
     windows
